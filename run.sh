@@ -1,3 +1,10 @@
+export TF_HTTP_USERNAME="your_gitlab_username"
+export TF_HTTP_PASSWORD="$GITLAB_PAT"
+terraform -chdir=stacks/workspace init -reconfigure -backend-config=../../envs/prd/workspace/backend.hcl
+terraform -chdir=stacks/workspace plan -var-file=../../envs/prd/workspace/terraform.tfvars
+
+
+
 #!/usr/bin/env bash
 set -euo pipefail
 
