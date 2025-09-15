@@ -1,26 +1,21 @@
 stages: [validate, plan, apply]
 
-# ----------------------------
-# Base Terraform
-# ----------------------------
+# ---------------------------------
+# Base Terraform (HTTP backend GitLab)
+# ---------------------------------
 .tf_base:
   image: hashicorp/terraform:1.7.5
   variables:
     TF_IN_AUTOMATION: "true"
     TF_INPUT: "false"
   before_script:
-    # Auth backend HTTP GitLab (Basic Auth)
     - export TF_HTTP_USERNAME="gitlab-ci-token"
     - export TF_HTTP_PASSWORD="$CI_JOB_TOKEN"
     - terraform --version
-    # On aura besoin de git pour détecter les fichiers modifiés
-    - apk add --no-cache git >/dev/null 2>&1 || true
-    # Récup un peu d’historique pour diff propre en MR
-    - git fetch --no-tags origin "+refs/heads/*:refs/remotes/origin/*" >/dev/null 2>&1 || true
 
-# ----------------------------
-# VALIDATE (code only)
-# ----------------------------
+# ---------------------------------
+# VALIDATE (si code Terraform/modules changent)
+# ---------------------------------
 validate:
   extends: .tf_base
   stage: validate
@@ -36,47 +31,10 @@ validate:
     - terraform -chdir=stacks/workspace fmt -check
     - terraform -chdir=stacks/workspace validate
 
-# ----------------------------
-# Helpers (inline bash)
-# ----------------------------
-.default_detect_and_set_paths: &detect_and_set_paths
-  - |
-    set -e
-    # Variables dérivées selon ENV/STACK de la matrix
-    export STACK_DIR="stacks/${STACK}"
-    export BACKEND_FILE="../../envs/${ENV}/${STACK}/backend.hcl"
-    export TFVARS_FILE="../../envs/${ENV}/${STACK}/terraform.tfvars"
-
-    # Détecte si des fichiers pertinents ont changé pour *ce* couple {ENV,STACK}
-    # MR: diff entre la target branch et le commit courant
-    # Branch pipeline: diff avec le commit précédent
-    if [[ "$CI_PIPELINE_SOURCE" == "merge_request_event" && -n "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" ]]; then
-      BASE_SHA="$(git rev-parse "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}")"
-      HEAD_SHA="$CI_COMMIT_SHA"
-    else
-      BASE_SHA="${CI_COMMIT_BEFORE_SHA:-}"
-      HEAD_SHA="$CI_COMMIT_SHA"
-      # si pas de base connue (premier commit), on considère qu'il y a des changements
-      [[ -z "$BASE_SHA" ]] && BASE_SHA="$HEAD_SHA^" || true
-    fi
-
-    # Patterns propres au stack + patterns communs
-    PATTERN="^(stacks/${STACK}/|envs/${ENV}/${STACK}/|modules/|.gitlab-ci.yml$)"
-    CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -E "$PATTERN" || true)
-
-    if [[ -z "$CHANGED" ]]; then
-      echo "🟡 Aucun changement pertinent pour ${ENV}/${STACK}. Job skippé."
-      echo "CHANGED=0" >> $CI_PROJECT_DIR/.env_out
-      exit 0
-    else
-      echo "✅ Changements détectés pour ${ENV}/${STACK}:"
-      echo "$CHANGED" | sed 's/^/ - /'
-      echo "CHANGED=1" >> $CI_PROJECT_DIR/.env_out
-    fi
-
-# ----------------------------
+# ---------------------------------
 # PLAN via matrix (stg/prd × hub/workspace)
-# ----------------------------
+# Chaque job enfant n'est déclenché que si *ses* chemins changent
+# ---------------------------------
 plan_matrix:
   extends: .tf_base
   stage: plan
@@ -85,33 +43,56 @@ plan_matrix:
       - ENV: ["stg", "prd"]
         STACK: ["hub", "workspace"]
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # STG / HUB
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $ENV == "stg" && $STACK == "hub"'
       changes:
-        # Si l’un quelconque de ces chemins change, on crée les jobs matrix,
-        # puis chaque job vérifiera s’il est concerné (guard ci-dessus).
-        - stacks/**/*
+        - stacks/hub/**/*
+        - envs/stg/hub/**/*
         - modules/**/*
-        - envs/**/*
         - .gitlab-ci.yml
+    # STG / WORKSPACE
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $ENV == "stg" && $STACK == "workspace"'
+      changes:
+        - stacks/workspace/**/*
+        - envs/stg/workspace/**/*
+        - modules/**/*
+        - .gitlab-ci.yml
+    # PRD / HUB
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $ENV == "prd" && $STACK == "hub"'
+      changes:
+        - stacks/hub/**/*
+        - envs/prd/hub/**/*
+        - modules/**/*
+        - .gitlab-ci.yml
+    # PRD / WORKSPACE
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $ENV == "prd" && $STACK == "workspace"'
+      changes:
+        - stacks/workspace/**/*
+        - envs/prd/workspace/**/*
+        - modules/**/*
+        - .gitlab-ci.yml
+    # Fallback: rien d'autre ne doit lancer ce job matrix
+    - when: never
   script:
-    - *detect_and_set_paths
-    # Recharger le flag CHANGED (si le job n'est pas déjà sorti plus haut)
-    - source $CI_PROJECT_DIR/.env_out || true
-    - '[[ "${CHANGED:-1}" == "0" ]] && exit 0'
-    # Plan
+    # Paramétrage dérivé de la matrix
+    - export STACK_DIR="stacks/${STACK}"
+    - export BACKEND_FILE="../../envs/${ENV}/${STACK}/backend.hcl"
+    - export TFVARS_FILE="../../envs/${ENV}/${STACK}/terraform.tfvars"
+
     - terraform -chdir="$STACK_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
     - terraform -chdir="$STACK_DIR" plan -no-color -out=tfplan -var-file="$TFVARS_FILE"
     - terraform -chdir="$STACK_DIR" show -no-color tfplan > tfplan.txt
   artifacts:
     when: always
+    # On évite la substitution complexe dans `paths`; on collecte ce que chaque enfant a produit
     paths:
-      - ${STACK_DIR}/tfplan
-      - ${STACK_DIR}/tfplan.txt
+      - stacks/**/tfplan
+      - stacks/**/tfplan.txt
     expire_in: 1 day
 
-# ----------------------------
+# ---------------------------------
 # APPLY STAGING (ordre garanti hub -> workspace)
-# ----------------------------
+# ---------------------------------
 .apply_stg_base:
   extends: .tf_base
   stage: apply
@@ -129,29 +110,29 @@ apply_stg_hub:
     STACK: "hub"
   resource_group: "stg-hub"
   script:
-    - *detect_and_set_paths
-    - source $CI_PROJECT_DIR/.env_out || true
-    - '[[ "${CHANGED:-1}" == "0" ]] && { echo "Skip apply stg/hub"; exit 0; }'
+    - export STACK_DIR="stacks/${STACK}"
+    - export BACKEND_FILE="../../envs/${ENV}/${STACK}/backend.hcl"
+    - export TFVARS_FILE="../../envs/${ENV}/${STACK}/terraform.tfvars"
     - terraform -chdir="$STACK_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
     - terraform -chdir="$STACK_DIR" apply -no-color -auto-approve -var-file="$TFVARS_FILE"
 
 apply_stg_workspace:
   extends: .apply_stg_base
-  needs: [ "apply_stg_hub" ]   # impose l'ordre
+  needs: [ "apply_stg_hub" ]     # impose hub -> workspace
   variables:
     ENV: "stg"
     STACK: "workspace"
   resource_group: "stg-workspace"
   script:
-    - *detect_and_set_paths
-    - source $CI_PROJECT_DIR/.env_out || true
-    - '[[ "${CHANGED:-1}" == "0" ]] && { echo "Skip apply stg/workspace"; exit 0; }'
+    - export STACK_DIR="stacks/${STACK}"
+    - export BACKEND_FILE="../../envs/${ENV}/${STACK}/backend.hcl"
+    - export TFVARS_FILE="../../envs/${ENV}/${STACK}/terraform.tfvars"
     - terraform -chdir="$STACK_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
     - terraform -chdir="$STACK_DIR" apply -no-color -auto-approve -var-file="$TFVARS_FILE"
 
-# ----------------------------
+# ---------------------------------
 # APPLY PROD (manuel + protégé ; ordre hub -> workspace)
-# ----------------------------
+# ---------------------------------
 .apply_prd_base:
   extends: .tf_base
   stage: apply
@@ -173,9 +154,9 @@ apply_prd_hub:
   environment:
     name: prd-hub
   script:
-    - *detect_and_set_paths
-    - source $CI_PROJECT_DIR/.env_out || true
-    - '[[ "${CHANGED:-1}" == "0" ]] && { echo "Skip apply prd/hub"; exit 0; }'
+    - export STACK_DIR="stacks/${STACK}"
+    - export BACKEND_FILE="../../envs/${ENV}/${STACK}/backend.hcl"
+    - export TFVARS_FILE="../../envs/${ENV}/${STACK}/terraform.tfvars"
     - terraform -chdir="$STACK_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
     - terraform -chdir="$STACK_DIR" apply -no-color -auto-approve -var-file="$TFVARS_FILE"
 
@@ -189,8 +170,8 @@ apply_prd_workspace:
   environment:
     name: prd-workspace
   script:
-    - *detect_and_set_paths
-    - source $CI_PROJECT_DIR/.env_out || true
-    - '[[ "${CHANGED:-1}" == "0" ]] && { echo "Skip apply prd/workspace"; exit 0; }'
+    - export STACK_DIR="stacks/${STACK}"
+    - export BACKEND_FILE="../../envs/${ENV}/${STACK}/backend.hcl"
+    - export TFVARS_FILE="../../envs/${ENV}/${STACK}/terraform.tfvars"
     - terraform -chdir="$STACK_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
     - terraform -chdir="$STACK_DIR" apply -no-color -auto-approve -var-file="$TFVARS_FILE"
