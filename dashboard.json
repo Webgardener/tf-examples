@@ -1,0 +1,276 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "2.0.0"
+    }
+  ],
+  "title": "Keycloak – Troubleshooting + Capacity (fusion)",
+  "uid": "keycloak-fusion",
+  "tags": [
+    "keycloak",
+    "troubleshooting",
+    "capacity"
+  ],
+  "schemaVersion": 38,
+  "version": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "current": {
+          "text": "Prometheus",
+          "value": "Prometheus"
+        }
+      },
+      {
+        "name": "realm",
+        "type": "query",
+        "label": "Realm",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(keycloak_user_events_total, realm)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "label": "Namespace",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(up{job=\"keycloak\"}, namespace)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "pod",
+        "type": "query",
+        "label": "Pod",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(up{job=\"keycloak\", namespace=~\"$namespace\"}, pod)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Instances Keycloak UP",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(up{job=\"keycloak\", namespace=~\"$namespace\", pod=~\"$pod\"})"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Taux d’erreurs HTTP (5xx, 5m)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"keycloak\", outcome=\"SERVER_ERROR\", namespace=~\"$namespace\", pod=~\"$pod\"}[5m]))"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"keycloak\", namespace=~\"$namespace\", pod=~\"$pod\"}[5m]))"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "P95 Latence HTTP (sec, 5m)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"keycloak\", namespace=~\"$namespace\", pod=~\"$pod\"}[5m])))"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "JVM Heap Used / Max",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(jvm_memory_used_bytes{job=\"keycloak\", area=\"heap\", namespace=~\"$namespace\", pod=~\"$pod\"})"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(jvm_memory_max_bytes{job=\"keycloak\", area=\"heap\", namespace=~\"$namespace\", pod=~\"$pod\"})"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Débit de logins (succès vs erreurs)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (realm) (rate(keycloak_user_events_total{event=\"login\", error=\"\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "login success ({{realm}})"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (realm) (rate(keycloak_user_events_total{event=\"login\", error!=\"\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "login error ({{realm}})"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Logins par client (top N)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, sum by (client_id) (rate(keycloak_user_events_total{event=\"login\", error=\"\", realm=~\"$realm\"}[5m])))",
+          "legendFormat": "{{client_id}}"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Logins par Identity Provider",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (idp) (rate(keycloak_user_events_total{event=\"login\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "{{idp}}"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Logouts par realm",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (realm) (rate(keycloak_user_events_total{event=\"logout\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "logout ({{realm}})"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Password validations (valid/invalid/error)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (realm) (rate(keycloak_credentials_password_hashing_validations_total{outcome=\"valid\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "valid ({{realm}})"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (realm) (rate(keycloak_credentials_password_hashing_validations_total{outcome=\"invalid\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "invalid ({{realm}})"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (realm) (rate(keycloak_credentials_password_hashing_validations_total{outcome=\"error\", realm=~\"$realm\"}[5m]))",
+          "legendFormat": "error ({{realm}})"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Requêtes HTTP par pod",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pod) (rate(http_server_requests_seconds_count{job=\"keycloak\", namespace=~\"$namespace\", pod=~\"$pod\"}[5m]))",
+          "legendFormat": "{{pod}}"
+        }
+      ]
+    }
+  ]
+}
