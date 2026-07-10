@@ -1,99 +1,75 @@
-##########################
-# Variables & Locals
-##########################
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
 
-# Pour chaque namespace, liste des ServiceAccounts autorisés à s’authentifier
-variable "vault_namespaces" {
-  description = "Namespaces Kubernetes qui utilisent Vault, avec leurs ServiceAccounts autorisés."
-  type        = map(list(string))
-
-  # Exemple à adapter
-  default = {
-    backend  = ["vault-client", "api-backend"]
-    frontend = ["vault-client"]
-    # prod     = ["vault-client"]
-  }
-}
-
-# Produit (namespace, serviceAccount) pour créer les alias
 locals {
-  ns_sa_pairs = flatten([
-    for ns, sa_list in var.vault_namespaces : [
-      for sa in sa_list : {
-        ns = ns
-        sa = sa
-      }
-    ]
-  ])
-}
-
-##########################
-# Provider & Backend K8s
-##########################
-
-provider "vault" {
-  # address = "https://vault.example.com"  # si besoin
-  # token   = var.vault_token              # ou via VAULT_TOKEN
-}
-
-data "vault_auth_backend" "kubernetes" {
-  # Chemin de ton backend Kubernetes, adapter si différent
-  path = "auth/kubernetes"
-}
-
-##########################
-# 1 Entity par Namespace
-##########################
-
-resource "vault_identity_entity" "ns" {
-  for_each = var.vault_namespaces
-
-  # Nom logique de l’entity, ex : k8s-backend, k8s-frontend
-  name = "k8s-${each.key}"
-
-  # Pas de policies attachées directement à l’entity (comme demandé)
-  # policies = []
-}
-
-##########################
-# Alias (Namespace, ServiceAccount)
-##########################
-
-resource "vault_identity_entity_alias" "ns_sa" {
-  for_each = {
-    for pair in local.ns_sa_pairs :
-    "${pair.ns}-${pair.sa}" => pair
+  # Mapping clé Vault -> client Keycloak
+  realm_clients = {
+    MPG_AUTH_TOKEN = { realm = keycloak_realm.mpg.id, client_id = "mpg-client" }
+    FOO_AUTH_TOKEN = { realm = keycloak_realm.foo.id, client_id = "foo-client" }
+    BAR_AUTH_TOKEN = { realm = keycloak_realm.bar.id, client_id = "bar-client" }
   }
 
-  # Nom du ServiceAccount (tel qu’il apparaît dans le token K8s)
-  name           = each.value.sa
-  mount_accessor = data.vault_auth_backend.kubernetes.accessor
+  # Clés existantes, aplaties en string -> string
+  other_keys = {
+    for k, v in jsondecode(file("${path.module}/mpg_secrets.json")) :
+    k => can(tostring(v)) ? tostring(v) : jsonencode(v)
+  }
 
-  # Tous les SAs d’un même namespace pointent vers la même entity
-  canonical_id = vault_identity_entity.ns[each.value.ns].id
-
-  # Metadata purement informative
-  metadata = {
-    service_account_name      = each.value.sa
-    service_account_namespace = each.value.ns
+  # Secrets générés par Keycloak, lus en computed
+  auth_tokens = {
+    for k, _ in local.realm_clients :
+    k => keycloak_openid_client.this[k].client_secret
   }
 }
 
-##########################
-# Rôle Kubernetes Auth par Namespace
-##########################
+# ---------------------------------------------------------------------------
+# Clients Keycloak
+# ---------------------------------------------------------------------------
 
-resource "vault_kubernetes_auth_backend_role" "ns" {
-  for_each = var.vault_namespaces
+resource "keycloak_openid_client" "this" {
+  for_each = local.realm_clients
 
-  backend   = data.vault_auth_backend.kubernetes.path
-  role_name = "ns-${each.key}" # ex: ns-backend, ns-frontend
+  realm_id    = each.value.realm
+  client_id   = each.value.client_id
+  access_type = "CONFIDENTIAL"
 
-  # Restreint aux SAs explicitement listés pour ce namespace
-  bound_service_account_names      = each.value
-  bound_service_account_namespaces = [each.key]
+  standard_flow_enabled    = true
+  service_accounts_enabled = true
 
-  # Pas de policies spécifiques au token ici (comme demandé)
-  # token_policies = []
-  token_ttl = 3600
+  # client_secret non défini -> Keycloak le génère
+}
+
+# ---------------------------------------------------------------------------
+# Secret Vault (KV v2) - nouvelle version à chaque changement
+# ---------------------------------------------------------------------------
+
+resource "vault_kv_secret_v2" "workload" {
+  mount               = "secret"
+  name                = "${var.application}/secrets" # pas de /data/ ici
+  delete_all_versions = true
+
+  data_json = jsonencode(merge(local.other_keys, local.auth_tokens))
+
+  depends_on = [keycloak_openid_client.this]
+
+  lifecycle {
+    precondition {
+      condition = length(setintersection(
+        keys(local.other_keys),
+        keys(local.auth_tokens),
+      )) == 0
+      error_message = "Collision de clés entre mpg_secrets.json et les tokens Keycloak."
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Sortie utile pour le rollout du workload
+# ---------------------------------------------------------------------------
+
+output "workload_secret_checksum" {
+  description = "Hash du contenu du secret, à injecter en annotation sur le PodSpec."
+  value       = sha256(jsonencode(merge(local.other_keys, local.auth_tokens)))
+  sensitive   = false
 }
