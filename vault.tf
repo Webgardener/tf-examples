@@ -1,34 +1,14 @@
-#!/usr/bin/env bash
-# scripts/list-certs.sh — inventaire des certs stockés dans Vault
-set -euo pipefail
-
-# Paths à auditer : en arguments, sinon liste par défaut
-CERT_PATHS=("$@")
-[ ${#CERT_PATHS[@]} -eq 0 ] && CERT_PATHS=(secret/mpg/certs secret/mpg-tools/certs)
-
-RENEWAL_WINDOW_DAYS=${RENEWAL_WINDOW_DAYS:-30}
-
-to_epoch() {
-  if date -d "$1" +%s >/dev/null 2>&1; then
-    date -d "$1" +%s                       # GNU (Linux)
-  else
-    date -j -f "%b %d %T %Y %Z" "$(echo "$1" | tr -s ' ')" +%s   # BSD (macOS)
-  fi
-}
-
-printf "%-22s | %-25s | %-40s | %-25s | %-11s | %s\n" \
-  "PATH" "NOM" "SUBJECT" "EXPIRATION" "JOURS REST." "STATUT"
-printf -- "-%.0s" {1..145}; echo ""
-
-EXPIRING=0
-for path in "${CERT_PATHS[@]}"; do
-  names=$(vault kv list -format=yaml "$path" 2>/dev/null | sed 's/^- //') || {
-    printf "%-22s | %s\n" "$path" "!! inaccessible ou vide"
-    EXPIRING=1
-    continue
-  }
   for name in $names; do
-    crt=$(vault kv get -field=crt "$path/$name")
+    # Cas 1 : pas de champ 'crt' dans l'entrée
+    if ! crt=$(vault kv get -field=crt "$path/$name" 2>/dev/null); then
+      printf "%-22s | %-25s | %s\n" "$path" "$name" "-- ignoré (pas de champ 'crt')"
+      continue
+    fi
+    # Cas 2 : le champ existe mais n'est pas un certificat x509 valide
+    if ! echo "$crt" | openssl x509 -noout 2>/dev/null; then
+      printf "%-22s | %-25s | %s\n" "$path" "$name" "-- ignoré (contenu non x509)"
+      continue
+    fi
     subject=$(echo "$crt" | openssl x509 -noout -subject | sed 's/^subject=//')
     enddate=$(echo "$crt" | openssl x509 -noout -enddate | cut -d= -f2)
     end_epoch=$(to_epoch "$enddate")
@@ -43,5 +23,3 @@ for path in "${CERT_PATHS[@]}"; do
     printf "%-22s | %-25s | %-40s | %-25s | %-11s | %s\n" \
       "$path" "$name" "${subject:0:40}" "$enddate" "$days_left" "$status"
   done
-done
-exit $EXPIRING
