@@ -1,14 +1,14 @@
   for name in $names; do
-    # Cas 1 : pas de champ 'crt' dans l'entrée
     if ! crt=$(vault kv get -field=crt "$path/$name" 2>/dev/null); then
       printf "%-22s | %-25s | %s\n" "$path" "$name" "-- ignoré (pas de champ 'crt')"
       continue
     fi
-    # Cas 2 : le champ existe mais n'est pas un certificat x509 valide
     if ! echo "$crt" | openssl x509 -noout 2>/dev/null; then
       printf "%-22s | %-25s | %s\n" "$path" "$name" "-- ignoré (contenu non x509)"
       continue
     fi
+    managed_by=$(vault kv metadata get -format=json "$path/$name" 2>/dev/null \
+      | jq -r '.data.custom_metadata.managed_by // "-"')
     subject=$(echo "$crt" | openssl x509 -noout -subject | sed 's/^subject=//')
     enddate=$(echo "$crt" | openssl x509 -noout -enddate | cut -d= -f2)
     end_epoch=$(to_epoch "$enddate")
@@ -20,6 +20,6 @@
     else
       status="OK"
     fi
-    printf "%-22s | %-25s | %-40s | %-25s | %-11s | %s\n" \
-      "$path" "$name" "${subject:0:40}" "$enddate" "$days_left" "$status"
+    printf "%-22s | %-25s | %-40s | %-25s | %-11s | %-10s | %s\n" \
+      "$path" "$name" "${subject:0:40}" "$enddate" "$days_left" "$managed_by" "$status"
   done
