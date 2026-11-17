@@ -64,7 +64,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Time threads spend waiting to get a connection from the Agroal pool. Anything above a few ms means the pool is saturated or the DB holds connections too long.",
+      "description": "Average time a thread waits to get a connection from the Agroal pool, computed over a sliding window (rate of total blocking time / rate of acquisitions). < 1 ms = normal; a few ms sustained = pool getting tight; tens of ms = pool saturated. Yellow line 5 ms, red line 50 ms.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -81,7 +81,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "off"
+              "mode": "line"
             }
           },
           "mappings": [],
@@ -93,8 +93,12 @@
                 "value": null
               },
               {
+                "color": "yellow",
+                "value": 5
+              },
+              {
                 "color": "red",
-                "value": 80
+                "value": 50
               }
             ]
           },
@@ -132,24 +136,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "agroal_blocking_time_average_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
-          "legendFormat": "{{pod}} - avg",
+          "expr": "sum by (pod) (rate(agroal_blocking_time_total_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))\n/\nsum by (pod) (rate(agroal_acquire_count_total{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} - avg wait",
           "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "agroal_blocking_time_max_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
-          "legendFormat": "{{pod}} - max",
-          "refId": "B",
           "range": true
         }
       ],
-      "title": "Connection acquisition wait time",
+      "title": "Connection acquisition wait time (avg per acquisition)",
       "type": "timeseries"
     },
     {
@@ -343,7 +336,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Time to open a new physical connection to the database (TCP + TLS + auth).",
+      "description": "Average time to open a new physical connection to the database (TCP + TLS + auth), over a sliding window. Empty when no connection is created (normal if pool initial = min = max size).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -411,24 +404,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "agroal_creation_time_average_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
-          "legendFormat": "{{pod}} - avg",
+          "expr": "sum by (pod) (rate(agroal_creation_time_total_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))\n/\nsum by (pod) (rate(agroal_creation_count_total{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} - avg creation time",
           "refId": "A",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "agroal_creation_time_max_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
-          "legendFormat": "{{pod}} - max",
-          "refId": "B",
           "range": true
         }
       ],
-      "title": "Connection creation time",
+      "title": "Connection creation time (avg per new connection)",
       "type": "timeseries"
     },
     {
