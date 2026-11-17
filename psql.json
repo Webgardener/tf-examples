@@ -1,24 +1,29 @@
 {
-  "title": "Companion — Pool de connexions DB",
+  "title": "Companion · Database connection pool",
   "uid": "companion-db-pool",
-  "description": "Saturation, contention et cycle de vie du pool database/sql de Companion (métriques mpg_db_pool_*).",
+  "description": "Saturation, contention and lifecycle of Companion's Go database/sql connection pool (mpg_db_pool_* metrics).",
   "tags": [
     "companion",
     "go",
     "database",
     "postgresql",
+    "connection-pool",
     "sre"
   ],
   "editable": true,
   "graphTooltip": 1,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "time": {
     "from": "now-6h",
     "to": "now"
   },
   "refresh": "30s",
   "timezone": "browser",
+  "timepicker": {},
+  "fiscalYearStartMonth": 0,
+  "liveNow": false,
+  "links": [],
   "annotations": {
     "list": [
       {
@@ -39,28 +44,46 @@
     "list": [
       {
         "name": "datasource",
-        "label": "Datasource",
+        "label": "Data source",
         "type": "datasource",
         "query": "prometheus",
         "current": {},
         "hide": 0,
         "refresh": 1,
         "regex": "",
-        "options": []
+        "options": [],
+        "description": "Prometheus data source that scrapes Companion."
+      },
+      {
+        "name": "app_label",
+        "label": "Application label name",
+        "type": "constant",
+        "hide": 2,
+        "query": "application",
+        "current": {
+          "text": "application",
+          "value": "application"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "application",
+            "value": "application"
+          }
+        ],
+        "description": "Name of the label set from LabelApplication in the Companion code."
       },
       {
         "name": "application",
         "label": "Application",
+        "description": "Application(s) exposing a connection pool.",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(mpg_db_pool_max_open_connections, application)",
-        "query": {
-          "query": "label_values(mpg_db_pool_max_open_connections, application)",
-          "refId": "StandardVariableQuery"
-        },
+        "definition": "label_values(mpg_db_pool_max_open_connections, $app_label)",
+        "query": "label_values(mpg_db_pool_max_open_connections, $app_label)",
         "refresh": 2,
         "multi": true,
         "includeAll": true,
@@ -76,21 +99,47 @@
         },
         "sort": 1,
         "hide": 0,
+        "regex": "",
         "options": []
       },
       {
-        "name": "instance",
-        "label": "Instance",
+        "name": "breakdown",
+        "label": "Break down by",
+        "type": "custom",
+        "query": "instance,pod",
+        "current": {
+          "selected": true,
+          "text": "instance",
+          "value": "instance"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "instance",
+            "value": "instance"
+          },
+          {
+            "selected": false,
+            "text": "pod",
+            "value": "pod"
+          }
+        ],
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "description": "instance = scrape target IP:port (always present, changes on every restart). pod = Kubernetes pod name (needs a pod label on the series)."
+      },
+      {
+        "name": "target",
+        "label": "Member",
+        "description": "Instances or pods to display, depending on 'Break down by'.",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(mpg_db_pool_max_open_connections{application=~\"$application\"}, instance)",
-        "query": {
-          "query": "label_values(mpg_db_pool_max_open_connections{application=~\"$application\"}, instance)",
-          "refId": "StandardVariableQuery"
-        },
+        "definition": "label_values(mpg_db_pool_max_open_connections{$app_label=~\"$application\"}, $breakdown)",
+        "query": "label_values(mpg_db_pool_max_open_connections{$app_label=~\"$application\"}, $breakdown)",
         "refresh": 2,
         "multi": true,
         "includeAll": true,
@@ -106,6 +155,7 @@
         },
         "sort": 1,
         "hide": 0,
+        "regex": "",
         "options": []
       }
     ]
@@ -113,31 +163,60 @@
   "panels": [
     {
       "type": "row",
-      "title": "Vue d'ensemble",
-      "collapsed": false,
-      "id": 1,
+      "title": "How to read this dashboard",
+      "collapsed": true,
+      "id": 2,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 0
       },
+      "panels": [
+        {
+          "type": "text",
+          "title": "How to read this dashboard",
+          "id": 1,
+          "gridPos": {
+            "h": 22,
+            "w": 24,
+            "x": 0,
+            "y": 1
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "#### What this dashboard answers\nCompanion uses Go's `database/sql` connection pool to talk to PostgreSQL. This dashboard answers four questions, top to bottom:\n\n| Section | Question | Look at |\n|---|---|---|\n| **Overview** | Is anything wrong right now? | Coloured tiles: green = fine, orange = watch, red = act |\n| **Saturation** | Is any member running out of connections? | Busiest member, not the average |\n| **Contention** | Are requests actually waiting? This is the user-visible impact. | Waits/s and the average wait time |\n| **Connection lifecycle** | Is the pool churning (opening/closing connections too often)? | Estimated connection lifetime |\n\n#### Triage flow\n1. **Red saturation, no waits:** the pool is busy but still keeping up. Plan capacity before it starts queueing.\n2. **Waits > 0:** requests block until a connection frees up, and that time adds directly to request latency. Then check *who* is saturated:\n   - **every member** → capacity problem: raise `SetMaxOpenConns` or scale out, *within* the PostgreSQL `max_connections` budget;\n   - **a single member** → local problem: slow queries, long transactions, uneven load balancing, or a **connection leak** (`rows`/`tx` not closed). A leak looks like *in use* stuck near *max* while traffic is low.\n3. **Short estimated lifetime (seconds rather than minutes):** churn. Each new connection costs a TCP + TLS + auth handshake on PostgreSQL. Review `SetConnMaxLifetime`, `SetConnMaxIdleTime` and `SetMaxIdleConns`.\n\n#### Key relationships\n- `open = in use + idle` and `open ≤ max open` on each member.\n- `sum(open)` over all members (plus every other client) must fit under PostgreSQL `max_connections`.\n- `max open = 0` means **unlimited** in Go. Saturation can't be computed then, and the pool can exhaust the database. Treat it as a misconfiguration.\n- Counters (`*_total`) reset when a process restarts. `rate()` handles this, so the graphs stay correct across deployments.\n\n#### Variables\n- **Application:** value of the application label on the metrics.\n- **Break down by:** `instance` (Prometheus scrape target `IP:port`, always present) or `pod` (needs a `pod` label from your ServiceMonitor/PodMonitor; it stays readable across restarts, whereas the pod IP changes).\n- **Member:** filter on one or more instances/pods.\n- **app_label** (hidden, *Settings → Variables*): name of the label set from `LabelApplication` in the code. Default `application`.\n\n*Every panel has a ⓘ tooltip explaining what it shows, what healthy looks like and what to do when it isn't.*"
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Overview: is the pool healthy right now?",
+      "collapsed": false,
+      "id": 3,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
       "panels": []
     },
     {
       "type": "stat",
-      "title": "Saturation (pire instance)",
-      "description": "max(in_use / max_open) sur les instances sélectionnées. >70 % : marge faible, >90 % : les requêtes vont attendre. Les instances avec max_open = 0 (illimité côté Go) sont exclues.",
-      "id": 2,
+      "title": "Saturation (busiest member)",
+      "description": "**What:** highest `in use / max open` ratio across the selected members.\n\n**Healthy:** below 70 %. Above 90 %, new queries on that member are about to queue.\n\n**Why the max:** each member has its own pool, so one saturated pod hurts its users even if the average looks fine.\n\nMembers with `max open = 0` (unlimited) are excluded, see *Unbounded pools*.",
+      "id": 4,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 0,
-        "y": 1
+        "y": 2
       },
       "targets": [
         {
@@ -145,12 +224,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max(mpg_db_pool_in_use_connections{application=~\"$application\", instance=~\"$instance\"} / (mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"} > 0))",
+          "expr": "max(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0))",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -192,137 +272,15 @@
         "graphMode": "area",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto"
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
       }
     },
     {
       "type": "stat",
-      "title": "Connexions en usage",
-      "description": "Somme des connexions actuellement empruntées par des requêtes/transactions.",
-      "id": 3,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 4,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(mpg_db_pool_in_use_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
-          "refId": "A",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "textMode": "value",
-        "orientation": "auto"
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Connexions idle",
-      "description": "Somme des connexions ouvertes et disponibles dans le pool.",
-      "id": 4,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 7,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(mpg_db_pool_idle_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
-          "refId": "A",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "textMode": "value",
-        "orientation": "auto"
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Capacité max",
-      "description": "Somme de max_open sur les instances. 0 = illimité (SetMaxOpenConns non configuré) : à corriger en prod.",
+      "title": "In use",
+      "description": "**What:** connections currently checked out by queries or transactions, summed over the selected members.\n\nRead it together with *Free headroom*.",
       "id": 5,
       "datasource": {
         "type": "prometheus",
@@ -331,8 +289,8 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 10,
-        "y": 1
+        "x": 3,
+        "y": 2
       },
       "targets": [
         {
@@ -340,12 +298,143 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"})",
+          "expr": "sum(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Idle",
+      "description": "**What:** open connections parked in the pool, ready for immediate reuse.\n\n**Reading:** some idle connections avoid paying a handshake on every query. A large and stable idle count holds PostgreSQL connection slots for nothing (tune `SetMaxIdleConns` / `SetConnMaxIdleTime`).",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 2
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(mpg_db_pool_idle_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Free headroom",
+      "description": "**What:** `sum(max open - in use)`: connections that can still be checked out before callers start waiting.\n\n**Healthy:** comfortably above your usual burst size. Unlimited pools are excluded.",
+      "id": 7,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 2
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -362,8 +451,12 @@
                 "value": null
               },
               {
+                "color": "orange",
+                "value": 2
+              },
+              {
                 "color": "green",
-                "value": 1
+                "value": 5
               }
             ]
           }
@@ -382,23 +475,25 @@
         "graphMode": "area",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto"
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
       }
     },
     {
       "type": "stat",
-      "title": "Attentes / s",
-      "description": "Nombre de demandes de connexion qui ont dû attendre faute de connexion libre. Doit rester ≈ 0.",
-      "id": 6,
+      "title": "DB connections held",
+      "description": "**What:** `sum(open)`: physical connections Companion currently holds on the database.\n\n**Why it matters:** this plus every other client must stay under PostgreSQL `max_connections` (minus `superuser_reserved_connections`). Compare it with your budget, especially before scaling out: each new replica can open up to `max open` more.",
+      "id": 8,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 13,
-        "y": 1
+        "w": 3,
+        "x": 12,
+        "y": 2
       },
       "targets": [
         {
@@ -406,12 +501,78 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(mpg_db_pool_wait_count_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Waits / s",
+      "description": "**What:** rate at which callers had to wait because the pool was exhausted (`WaitCount`).\n\n**Healthy:** 0. Any sustained value means the pool is the bottleneck and users get extra latency. See the *Contention* section.",
+      "id": 9,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 2
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -429,7 +590,7 @@
               },
               {
                 "color": "orange",
-                "value": 0.1
+                "value": 0.01
               },
               {
                 "color": "red",
@@ -453,23 +614,25 @@
         "graphMode": "area",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto"
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
       }
     },
     {
       "type": "stat",
-      "title": "Attente moyenne",
-      "description": "Temps moyen passé à attendre une connexion, pour les requêtes qui ont attendu.",
-      "id": 7,
+      "title": "Avg wait time",
+      "description": "**What:** `rate(wait duration) / rate(wait count)`: average time a caller waited for a connection, counting only callers that waited.\n\n**Healthy:** no waits at all, or a few ms. Above 100 ms, users feel it: this time adds to every affected request.",
+      "id": 10,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 17,
-        "y": 1
+        "w": 3,
+        "x": 18,
+        "y": 2
       },
       "targets": [
         {
@@ -477,12 +640,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(mpg_db_pool_wait_duration_seconds_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(mpg_db_pool_wait_count_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) / (sum(rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -500,11 +664,81 @@
               },
               {
                 "color": "orange",
-                "value": 0.05
+                "value": 0.01
               },
               {
                 "color": "red",
-                "value": 0.5
+                "value": 0.1
+              }
+            ]
+          },
+          "noValue": "No waits"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Unbounded pools",
+      "description": "**What:** number of members with `max open = 0`, i.e. `SetMaxOpenConns` never called.\n\n**Healthy:** 0. An unbounded pool can open as many connections as there are concurrent requests and exhaust PostgreSQL during a traffic spike. Saturation can't be computed for these members.",
+      "id": 11,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 2
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} == 0) or vector(0)",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           }
@@ -523,89 +757,29 @@
         "graphMode": "area",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto"
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Instances",
-      "description": "Nombre d'instances qui exposent les métriques du pool.",
-      "id": 8,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 21,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "count(mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
-          "refId": "A",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "textMode": "value",
-        "orientation": "auto"
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
       }
     },
     {
       "type": "row",
-      "title": "Saturation du pool",
+      "title": "Saturation: is any member running out of connections?",
       "collapsed": false,
-      "id": 9,
+      "id": 12,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 6
       },
       "panels": []
     },
     {
       "type": "timeseries",
-      "title": "Utilisation du pool par application",
-      "description": "in use + idle = open. Quand in use rejoint max, les nouvelles requêtes attendent (voir Contention).",
-      "id": 10,
+      "title": "Saturation per $breakdown",
+      "description": "**What:** `in use / max open` for each member.\n\n**Healthy:** below the orange line (70 %).\n\n**If one member is high and the others aren't:** look for slow queries or long transactions on that pod, uneven load balancing (sticky sessions, long-lived HTTP/2 or gRPC connections), or a connection leak.\n\n**If all members rise together:** real capacity need. Scale out or raise `max open`, within the PostgreSQL connection budget.",
+      "id": 13,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -614,7 +788,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 7
       },
       "targets": [
         {
@@ -622,203 +796,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application) (mpg_db_pool_in_use_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "{{application}} in use",
+          "expr": "max by ($app_label, $breakdown) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0))",
+          "legendFormat": "{{$breakdown}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (application) (mpg_db_pool_idle_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "{{application}} idle",
-          "refId": "B",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (application) (mpg_db_pool_open_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "{{application}} open",
-          "refId": "C",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (application) (mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "{{application}} max",
-          "refId": "D",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "min": 0,
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "opacity",
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*max.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    10
-                  ]
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "red"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*in use.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "orange"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*idle.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "green"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*open$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "blue"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max",
-            "mean"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Saturation par instance (in use / max)",
-      "description": "Ratio par instance. Une seule instance saturée suffit à générer de la latence : surveiller le max, pas la moyenne.",
-      "id": 11,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 6
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "mpg_db_pool_in_use_connections{application=~\"$application\", instance=~\"$instance\"} / (mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"} > 0)",
-          "legendFormat": "{{instance}}",
-          "refId": "A",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -835,6 +819,7 @@
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "opacity",
+            "axisSoftMin": 0,
             "stacking": {
               "mode": "none",
               "group": "A"
@@ -873,7 +858,9 @@
             "max",
             "mean"
           ],
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
@@ -882,32 +869,19 @@
       }
     },
     {
-      "type": "row",
-      "title": "Contention (attente de connexion)",
-      "collapsed": false,
-      "id": 12,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 14
-      },
-      "panels": []
-    },
-    {
       "type": "timeseries",
-      "title": "Requêtes en attente / s",
-      "description": "Taux de demandes bloquées faute de connexion libre. Tout pic signifie que le pool est le goulot d'étranglement.",
-      "id": 13,
+      "title": "Free headroom per $breakdown",
+      "description": "**What:** `max open - in use` for each member: connections still available before callers start waiting.\n\n**Reading:** a member at 0 is saturated *right now*; its next queries wait (see *Contention*). A line that stays flat at 0 while traffic is low suggests leaked connections.",
+      "id": 14,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 15
+        "w": 12,
+        "x": 12,
+        "y": 7
       },
       "targets": [
         {
@@ -915,17 +889,18 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (rate(mpg_db_pool_wait_count_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}}",
+          "expr": "sum by ($app_label, $breakdown) ((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "{{$breakdown}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "short",
           "min": 0,
           "color": {
             "mode": "palette-classic"
@@ -937,8 +912,123 @@
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "opacity",
+            "axisSoftMin": 0,
             "stacking": {
               "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "transparent",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ],
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool composition: $application",
+      "description": "**What:** for one application, summed over the selected members: *in use* and *idle* stacked (their sum is *open*), with the *max open* ceiling as a dashed line.\n\n**Reading:**\n- *In use* touching *max*: saturation, callers will wait.\n- *Idle* large and flat: connections kept open for nothing, holding PostgreSQL slots.\n- *Max* changing: the pool configuration or the number of replicas changed.\n\nMembers with an unlimited pool (`max open = 0`) count in *in use*/*idle* but add nothing to *max open*.\n\nOne panel is repeated per selected application.",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "In use",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(mpg_db_pool_idle_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "Idle",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "Max open",
+          "refId": "C",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 35,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "opacity",
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "normal",
               "group": "A"
             },
             "thresholdsStyle": {
@@ -955,7 +1045,74 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In use"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Idle"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max open"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "mode": "none",
+                  "group": "B"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -966,19 +1123,37 @@
             "max",
             "mean"
           ],
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "repeat": "application",
+      "repeatDirection": "h",
+      "maxPerRow": 2
+    },
+    {
+      "type": "row",
+      "title": "Contention: are requests waiting for a connection?",
+      "collapsed": false,
+      "id": 16,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "panels": []
     },
     {
       "type": "timeseries",
-      "title": "Latence moyenne d'attente",
-      "description": "rate(wait_duration) / rate(wait_count) : temps moyen d'attente par requête bloquée. S'ajoute directement à la latence perçue.",
-      "id": 14,
+      "title": "Waits per second per $breakdown",
+      "description": "**What:** how often callers on each member found the pool exhausted and had to wait.\n\n**Healthy:** a flat line at 0.\n\n**If not:** match it with *Saturation per member*. Waits always come with saturation near 100 % on the same member.",
+      "id": 17,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -986,8 +1161,8 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 8,
-        "y": 15
+        "x": 0,
+        "y": 24
       },
       "targets": [
         {
@@ -995,17 +1170,18 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (rate(mpg_db_pool_wait_duration_seconds_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(mpg_db_pool_wait_count_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}}",
+          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{$breakdown}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ops",
           "min": 0,
           "color": {
             "mode": "palette-classic"
@@ -1017,6 +1193,7 @@
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "opacity",
+            "axisSoftMin": 0,
             "stacking": {
               "mode": "none",
               "group": "A"
@@ -1034,11 +1211,11 @@
               },
               {
                 "color": "orange",
-                "value": 0.05
+                "value": 0.01
               },
               {
                 "color": "red",
-                "value": 0.5
+                "value": 1
               }
             ]
           }
@@ -1054,7 +1231,9 @@
             "max",
             "mean"
           ],
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1064,9 +1243,102 @@
     },
     {
       "type": "timeseries",
-      "title": "Temps bloqué cumulé (s/s)",
-      "description": "rate(wait_duration_seconds_total) : secondes d'attente par seconde, soit le nombre moyen de goroutines bloquées en permanence sur le pool.",
-      "id": 15,
+      "title": "Average wait time per $breakdown",
+      "description": "**What:** average time a waiting caller spent blocked before getting a connection.\n\n**Reading:** this latency adds directly to the response time of the affected requests. Compare it with your latency SLO: 50 ms of pool wait on a 200 ms budget is a big share.\n\nEmpty when nothing waited, which is the healthy case.",
+      "id": 18,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) / (sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "opacity",
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.1
+              }
+            ]
+          },
+          "noValue": "No waits"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ],
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests blocked on the pool (average)",
+      "description": "**What:** `rate(wait_duration_seconds_total)` in seconds of waiting per second. By Little's law this equals the **average number of requests blocked waiting for a connection** at any given time.\n\n**Example:** 3 means that, on average, 3 requests are stuck waiting on that member at any moment. Each of them is a goroutine holding memory and a client waiting.",
+      "id": 19,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1075,7 +1347,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 15
+        "y": 24
       },
       "targets": [
         {
@@ -1083,12 +1355,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (rate(mpg_db_pool_wait_duration_seconds_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}}",
+          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{$breakdown}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -1105,6 +1378,7 @@
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "opacity",
+            "axisSoftMin": 0,
             "stacking": {
               "mode": "none",
               "group": "A"
@@ -1134,7 +1408,9 @@
             "max",
             "mean"
           ],
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1144,31 +1420,31 @@
     },
     {
       "type": "row",
-      "title": "Cycle de vie des connexions",
+      "title": "Connection lifecycle: is the pool churning?",
       "collapsed": false,
-      "id": 16,
+      "id": 20,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 32
       },
       "panels": []
     },
     {
       "type": "timeseries",
-      "title": "Fermetures de connexions / s",
-      "description": "Connexions recyclées par SetConnMaxLifetime ou par la politique idle. Un taux élevé et constant = churn (handshakes TLS/auth répétés côté PostgreSQL) : revoir les paramètres du pool.",
-      "id": 17,
+      "title": "Connections closed per second, by reason",
+      "description": "**What:** connections closed by the pool itself:\n- **max lifetime:** reached `SetConnMaxLifetime` (planned recycling, e.g. to follow DNS changes or failovers);\n- **max idle:** closed by the idle policy (see the metric note in *Reference*).\n\n**Reading:** a steady low rate is expected. Each closed connection usually gets replaced by a new one, which costs a TCP + TLS + auth handshake on PostgreSQL.",
+      "id": 21,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 24
+        "y": 33
       },
       "targets": [
         {
@@ -1176,24 +1452,26 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application) (rate(mpg_db_pool_max_lifetime_closed_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{application}} max lifetime",
+          "expr": "sum by ($app_label) (rate(mpg_db_pool_max_lifetime_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{$app_label}} · max lifetime",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application) (rate(mpg_db_pool_max_idle_closed_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{application}} max idle",
+          "expr": "sum by ($app_label) (rate(mpg_db_pool_max_idle_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{$app_label}} · max idle",
           "refId": "B",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -1210,6 +1488,7 @@
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "opacity",
+            "axisSoftMin": 0,
             "stacking": {
               "mode": "none",
               "group": "A"
@@ -1239,7 +1518,9 @@
             "max",
             "mean"
           ],
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1249,18 +1530,18 @@
     },
     {
       "type": "timeseries",
-      "title": "Connexions ouvertes par instance",
-      "description": "Connexions établies (in use + idle) par instance. La somme sur toutes les instances doit rester sous max_connections côté PostgreSQL.",
-      "id": 18,
+      "title": "Estimated connection lifetime",
+      "description": "**What:** `open / closure rate` (Little's law): roughly how long a connection lives before the pool recycles it.\n\n**Healthy:** of the order of your `SetConnMaxLifetime` (typically minutes). **Seconds** means churn: the pool keeps closing connections it then reopens. Usually the cause is `SetMaxIdleConns` set too low for a bursty load, or an idle time that is too short.\n\n*Estimate only:* it counts only the two closure reasons exported, and assumes a steady state.",
+      "id": 22,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 24
+        "w": 8,
+        "x": 8,
+        "y": 33
       },
       "targets": [
         {
@@ -1268,12 +1549,98 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (mpg_db_pool_open_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}}",
+          "expr": "sum by ($app_label) (mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"}) / (sum by ($app_label) (rate(mpg_db_pool_max_lifetime_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]) + rate(mpg_db_pool_max_idle_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
-          "format": "time_series"
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "opacity",
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "No recycling"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ],
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Open connections per $breakdown",
+      "description": "**What:** connections established by each member (in use + idle).\n\n**Reading:** the stacked total is what Companion costs PostgreSQL in connection slots. Steps up and down usually come from deployments and scaling events.",
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 33
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -1286,12 +1653,13 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 10,
+            "fillOpacity": 25,
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "opacity",
+            "axisSoftMin": 0,
             "stacking": {
-              "mode": "none",
+              "mode": "normal",
               "group": "A"
             },
             "thresholdsStyle": {
@@ -1319,7 +1687,9 @@
             "max",
             "mean"
           ],
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1329,31 +1699,31 @@
     },
     {
       "type": "row",
-      "title": "Détail par instance",
+      "title": "Per-member detail",
       "collapsed": false,
-      "id": 19,
+      "id": 24,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 41
       },
       "panels": []
     },
     {
       "type": "table",
-      "title": "État courant par instance",
-      "id": 20,
+      "title": "Current state per $breakdown",
+      "id": 25,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Photo instantanée de chaque instance, triée par saturation.",
+      "description": "Live snapshot of every member, busiest first. Click a column header to re-sort. A member with an empty *Saturation* cell has an unlimited pool (`max open = 0`).",
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 33
+        "y": 42
       },
       "targets": [
         {
@@ -1361,72 +1731,104 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application, instance) (mpg_db_pool_in_use_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
+          "expr": "max by ($app_label, $breakdown) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0))",
+          "legendFormat": "",
           "refId": "A",
           "range": false,
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "editorMode": "code"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application, instance) (mpg_db_pool_idle_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
+          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "",
           "refId": "B",
           "range": false,
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "editorMode": "code"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application, instance) (mpg_db_pool_open_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
+          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_idle_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "",
           "refId": "C",
           "range": false,
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "editorMode": "code"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application, instance) (mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"})",
-          "legendFormat": "__auto",
+          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "",
           "refId": "D",
           "range": false,
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "editorMode": "code"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (application, instance) (mpg_db_pool_in_use_connections{application=~\"$application\", instance=~\"$instance\"} / (mpg_db_pool_max_open_connections{application=~\"$application\", instance=~\"$instance\"} > 0))",
-          "legendFormat": "__auto",
+          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "",
           "refId": "E",
           "range": false,
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "editorMode": "code"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (application, instance) (rate(mpg_db_pool_wait_count_total{application=~\"$application\", instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "__auto",
+          "expr": "sum by ($app_label, $breakdown) ((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "legendFormat": "",
           "refId": "F",
           "range": false,
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "refId": "G",
+          "range": false,
+          "instant": true,
+          "format": "table",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) / (sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
+          "legendFormat": "",
+          "refId": "H",
+          "range": false,
+          "instant": true,
+          "format": "table",
+          "editorMode": "code"
         }
       ],
       "transformations": [
@@ -1443,20 +1845,25 @@
             "indexByName": {
               "application": 0,
               "instance": 1,
-              "Value #E": 2,
-              "Value #A": 3,
-              "Value #B": 4,
-              "Value #C": 5,
-              "Value #D": 6,
-              "Value #F": 7
+              "pod": 1,
+              "Saturation": 2,
+              "In use": 3,
+              "Idle": 4,
+              "Open": 5,
+              "Max open": 6,
+              "Headroom": 7,
+              "Waits/s": 8,
+              "Avg wait": 9
             },
             "renameByName": {
-              "Value #A": "En usage",
-              "Value #B": "Idle",
-              "Value #C": "Ouvertes",
-              "Value #D": "Max",
-              "Value #E": "Saturation",
-              "Value #F": "Attentes/s"
+              "Value #A": "Saturation",
+              "Value #B": "In use",
+              "Value #C": "Idle",
+              "Value #D": "Open",
+              "Value #E": "Max open",
+              "Value #F": "Headroom",
+              "Value #G": "Waits/s",
+              "Value #H": "Avg wait"
             }
           }
         },
@@ -1478,7 +1885,8 @@
             "align": "auto",
             "cellOptions": {
               "type": "auto"
-            }
+            },
+            "filterable": true
           },
           "thresholds": {
             "mode": "absolute",
@@ -1506,6 +1914,14 @@
                 "value": 0
               },
               {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
@@ -1526,26 +1942,57 @@
                 }
               },
               {
+                "id": "custom.width",
+                "value": 220
+              },
+              {
                 "id": "custom.cellOptions",
                 "value": {
                   "type": "gauge",
-                  "mode": "lcd"
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
                 }
-              },
-              {
-                "id": "max",
-                "value": 1
-              },
-              {
-                "id": "min",
-                "value": 0
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "Attentes/s"
+              "options": "Headroom"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 2
+                    },
+                    {
+                      "color": "green",
+                      "value": 5
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Waits/s"
             },
             "properties": [
               {
@@ -1567,7 +2014,7 @@
                     },
                     {
                       "color": "orange",
-                      "value": 0.1
+                      "value": 0.01
                     },
                     {
                       "color": "red",
@@ -1579,7 +2026,47 @@
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg wait"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.01
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
                 }
               }
             ]
@@ -1591,8 +2078,43 @@
         "cellHeight": "sm",
         "footer": {
           "show": false
-        }
+        },
+        "sortBy": [
+          {
+            "displayName": "Saturation",
+            "desc": true
+          }
+        ]
       }
+    },
+    {
+      "type": "row",
+      "title": "Reference: metrics and suggested alerts",
+      "collapsed": true,
+      "id": 27,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 51
+      },
+      "panels": [
+        {
+          "type": "text",
+          "title": "Reference",
+          "id": 26,
+          "gridPos": {
+            "h": 30,
+            "w": 24,
+            "x": 0,
+            "y": 52
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "#### Metrics (from Go `sql.DBStats`, exposed by Companion)\n| Metric | Type | `sql.DBStats` field | Meaning |\n|---|---|---|---|\n| `mpg_db_pool_max_open_connections` | gauge | `MaxOpenConnections` | Configured ceiling (`SetMaxOpenConns`). 0 = unlimited. |\n| `mpg_db_pool_open_connections` | gauge | `OpenConnections` | Established connections, in use + idle. |\n| `mpg_db_pool_in_use_connections` | gauge | `InUse` | Connections checked out by a query or transaction. |\n| `mpg_db_pool_idle_connections` | gauge | `Idle` | Open connections waiting in the pool. |\n| `mpg_db_pool_wait_count_total` | counter | `WaitCount` | Times a caller had to wait because the pool was exhausted. |\n| `mpg_db_pool_wait_duration_seconds_total` | counter | `WaitDuration` | Total time spent waiting for a connection. |\n| `mpg_db_pool_max_lifetime_closed_total` | counter | `MaxLifetimeClosed` | Connections closed by `SetConnMaxLifetime`. |\n| `mpg_db_pool_max_idle_closed_total` | counter | `MaxIdleClosed` or `MaxIdleTimeClosed` ⚠️ | See note below. |\n\n⚠️ In Go these are two distinct counters: `MaxIdleClosed` (pool shrinking because of `SetMaxIdleConns`) and `MaxIdleTimeClosed` (`SetConnMaxIdleTime`). The metric's help text mentions `SetConnMaxIdleTime` but its name matches `MaxIdleClosed`. Check which field the code really exports.\n\n#### Suggested alert rules (tune thresholds to your SLOs)\n```yaml\n- alert: CompanionDBPoolSaturated\n  expr: max by (application, instance) (mpg_db_pool_in_use_connections / (mpg_db_pool_max_open_connections > 0)) > 0.9\n  for: 10m\n  labels: {severity: warning}\n- alert: CompanionDBPoolWaiting\n  expr: sum by (application, instance) (rate(mpg_db_pool_wait_count_total[5m])) > 1\n  for: 5m\n  labels: {severity: warning}\n- alert: CompanionDBPoolSlowWait\n  expr: |\n    sum by (application, instance) (rate(mpg_db_pool_wait_duration_seconds_total[5m]))\n      / (sum by (application, instance) (rate(mpg_db_pool_wait_count_total[5m])) > 0) > 0.1\n  for: 5m\n  labels: {severity: critical}\n- alert: CompanionDBPoolUnbounded\n  expr: mpg_db_pool_max_open_connections == 0\n  for: 1h\n  labels: {severity: info}\n- alert: CompanionDBPoolChurn\n  expr: |\n    sum by (application) (mpg_db_pool_open_connections)\n      / (sum by (application) (rate(mpg_db_pool_max_lifetime_closed_total[15m]) + rate(mpg_db_pool_max_idle_closed_total[15m])) > 0) < 60\n  for: 30m\n  labels: {severity: info}\n```"
+          }
+        }
+      ]
     }
   ]
 }
