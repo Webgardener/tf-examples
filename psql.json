@@ -13,7 +13,7 @@
   "editable": true,
   "graphTooltip": 1,
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "time": {
     "from": "now-6h",
     "to": "now"
@@ -103,43 +103,35 @@
         "options": []
       },
       {
-        "name": "breakdown",
-        "label": "Break down by",
-        "type": "custom",
-        "query": "instance,pod",
+        "name": "pod_label",
+        "label": "Pod label name",
+        "type": "constant",
+        "hide": 2,
+        "query": "pod",
         "current": {
-          "selected": true,
-          "text": "instance",
-          "value": "instance"
+          "text": "pod",
+          "value": "pod"
         },
         "options": [
           {
             "selected": true,
-            "text": "instance",
-            "value": "instance"
-          },
-          {
-            "selected": false,
             "text": "pod",
             "value": "pod"
           }
         ],
-        "multi": false,
-        "includeAll": false,
-        "hide": 0,
-        "description": "instance = scrape target IP:port (always present, changes on every restart). pod = Kubernetes pod name (needs a pod label on the series)."
+        "description": "Label carrying the Kubernetes pod name. Set to 'instance' if your series have no pod label."
       },
       {
-        "name": "target",
-        "label": "Member",
-        "description": "Instances or pods to display, depending on 'Break down by'.",
+        "name": "pod",
+        "label": "Pod",
+        "description": "Pods to display.",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(mpg_db_pool_max_open_connections{$app_label=~\"$application\"}, $breakdown)",
-        "query": "label_values(mpg_db_pool_max_open_connections{$app_label=~\"$application\"}, $breakdown)",
+        "definition": "label_values(mpg_db_pool_max_open_connections{$app_label=~\"$application\"}, $pod_label)",
+        "query": "label_values(mpg_db_pool_max_open_connections{$app_label=~\"$application\"}, $pod_label)",
         "refresh": 2,
         "multi": true,
         "includeAll": true,
@@ -185,7 +177,7 @@
           },
           "options": {
             "mode": "markdown",
-            "content": "#### What this dashboard answers\nCompanion uses Go's `database/sql` connection pool to talk to PostgreSQL. This dashboard answers four questions, top to bottom:\n\n| Section | Question | Look at |\n|---|---|---|\n| **Overview** | Is anything wrong right now? | Coloured tiles: green = fine, orange = watch, red = act |\n| **Saturation** | Is any member running out of connections? | Busiest member, not the average |\n| **Contention** | Are requests actually waiting? This is the user-visible impact. | Waits/s and the average wait time |\n| **Connection lifecycle** | Is the pool churning (opening/closing connections too often)? | Estimated connection lifetime |\n\n#### Triage flow\n1. **Red saturation, no waits:** the pool is busy but still keeping up. Plan capacity before it starts queueing.\n2. **Waits > 0:** requests block until a connection frees up, and that time adds directly to request latency. Then check *who* is saturated:\n   - **every member** → capacity problem: raise `SetMaxOpenConns` or scale out, *within* the PostgreSQL `max_connections` budget;\n   - **a single member** → local problem: slow queries, long transactions, uneven load balancing, or a **connection leak** (`rows`/`tx` not closed). A leak looks like *in use* stuck near *max* while traffic is low.\n3. **Short estimated lifetime (seconds rather than minutes):** churn. Each new connection costs a TCP + TLS + auth handshake on PostgreSQL. Review `SetConnMaxLifetime`, `SetConnMaxIdleTime` and `SetMaxIdleConns`.\n\n#### Key relationships\n- `open = in use + idle` and `open ≤ max open` on each member.\n- `sum(open)` over all members (plus every other client) must fit under PostgreSQL `max_connections`.\n- `max open = 0` means **unlimited** in Go. Saturation can't be computed then, and the pool can exhaust the database. Treat it as a misconfiguration.\n- Counters (`*_total`) reset when a process restarts. `rate()` handles this, so the graphs stay correct across deployments.\n\n#### Variables\n- **Application:** value of the application label on the metrics.\n- **Break down by:** `instance` (Prometheus scrape target `IP:port`, always present) or `pod` (needs a `pod` label from your ServiceMonitor/PodMonitor; it stays readable across restarts, whereas the pod IP changes).\n- **Member:** filter on one or more instances/pods.\n- **app_label** (hidden, *Settings → Variables*): name of the label set from `LabelApplication` in the code. Default `application`.\n\n*Every panel has a ⓘ tooltip explaining what it shows, what healthy looks like and what to do when it isn't.*"
+            "content": "#### What this dashboard answers\nCompanion uses Go's `database/sql` connection pool to talk to PostgreSQL. This dashboard answers four questions, top to bottom:\n\n| Section | Question | Look at |\n|---|---|---|\n| **Overview** | Is anything wrong right now? | Coloured tiles: green = fine, orange = watch, red = act |\n| **Saturation** | Is any pod running out of connections? | Busiest pod, not the average |\n| **Contention** | Are requests actually waiting? This is the user-visible impact. | Waits/s and the average wait time |\n| **Connection lifecycle** | Is the pool churning (opening/closing connections too often)? | Estimated connection lifetime |\n\n#### Triage flow\n1. **Red saturation, no waits:** the pool is busy but still keeping up. Plan capacity before it starts queueing.\n2. **Waits > 0:** requests block until a connection frees up, and that time adds directly to request latency. Then check *who* is saturated:\n   - **every pod** → capacity problem: raise `SetMaxOpenConns` or scale out, *within* the PostgreSQL `max_connections` budget;\n   - **a single pod** → local problem: slow queries, long transactions, uneven load balancing, or a **connection leak** (`rows`/`tx` not closed). A leak looks like *in use* stuck near *max* while traffic is low.\n3. **Short estimated lifetime (seconds rather than minutes):** churn. Each new connection costs a TCP + TLS + auth handshake on PostgreSQL. Review `SetConnMaxLifetime`, `SetConnMaxIdleTime` and `SetMaxIdleConns`.\n\n#### Key relationships\n- `open = in use + idle` and `open ≤ max open` on each pod.\n- `sum(open)` over all pods (plus every other client) must fit under PostgreSQL `max_connections`.\n- `max open = 0` means **unlimited** in Go. Saturation can't be computed then, and the pool can exhaust the database. Treat it as a misconfiguration.\n- Counters (`*_total`) reset when a process restarts. `rate()` handles this, so the graphs stay correct across deployments.\n\n#### Variables\n- **Application:** value of the application label on the metrics.\n- **Pod:** filter on one or more pods. Each pod runs its own Companion process, hence its own connection pool.\n- Two hidden settings (*Settings → Variables*), to change only if your labels differ:\n  - `app_label`: name of the label set from `LabelApplication` in the code (default `application`);\n  - `pod_label`: label carrying the pod name (default `pod`). If your series have no `pod` label, set it to `instance`.\n\n*Every panel has a ⓘ tooltip explaining what it shows, what healthy looks like and what to do when it isn't.*"
           }
         }
       ]
@@ -205,8 +197,8 @@
     },
     {
       "type": "stat",
-      "title": "Saturation (busiest member)",
-      "description": "**What:** highest `in use / max open` ratio across the selected members.\n\n**Healthy:** below 70 %. Above 90 %, new queries on that member are about to queue.\n\n**Why the max:** each member has its own pool, so one saturated pod hurts its users even if the average looks fine.\n\nMembers with `max open = 0` (unlimited) are excluded, see *Unbounded pools*.",
+      "title": "Saturation (busiest pod)",
+      "description": "**What:** highest `in use / max open` ratio across the selected pods.\n\n**Healthy:** below 70 %. Above 90 %, new queries on that pod are about to queue.\n\n**Why the max:** each pod has its own pool, so one saturated pod hurts its users even if the average looks fine.\n\nPods with `max open = 0` (unlimited) are excluded, see *Unbounded pools*.",
       "id": 4,
       "datasource": {
         "type": "prometheus",
@@ -224,7 +216,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0))",
+          "expr": "max(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} > 0))",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -280,7 +272,7 @@
     {
       "type": "stat",
       "title": "In use",
-      "description": "**What:** connections currently checked out by queries or transactions, summed over the selected members.\n\nRead it together with *Free headroom*.",
+      "description": "**What:** connections currently checked out by queries or transactions, summed over the selected pods.\n\nRead it together with *Free headroom*.",
       "id": 5,
       "datasource": {
         "type": "prometheus",
@@ -298,7 +290,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -363,7 +355,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_idle_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum(mpg_db_pool_idle_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -428,7 +420,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -501,7 +493,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum(mpg_db_pool_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -566,7 +558,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "expr": "sum(rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -640,7 +632,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) / (sum(rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
+          "expr": "sum(rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) / (sum(rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) > 0)",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -696,7 +688,7 @@
     {
       "type": "stat",
       "title": "Unbounded pools",
-      "description": "**What:** number of members with `max open = 0`, i.e. `SetMaxOpenConns` never called.\n\n**Healthy:** 0. An unbounded pool can open as many connections as there are concurrent requests and exhaust PostgreSQL during a traffic spike. Saturation can't be computed for these members.",
+      "description": "**What:** number of pods with `max open = 0`, i.e. `SetMaxOpenConns` never called.\n\n**Healthy:** 0. An unbounded pool can open as many connections as there are concurrent requests and exhaust PostgreSQL during a traffic spike. Saturation can't be computed for these pods.",
       "id": 11,
       "datasource": {
         "type": "prometheus",
@@ -714,7 +706,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} == 0) or vector(0)",
+          "expr": "count(mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} == 0) or vector(0)",
           "legendFormat": "__auto",
           "refId": "A",
           "range": true,
@@ -764,7 +756,7 @@
     },
     {
       "type": "row",
-      "title": "Saturation: is any member running out of connections?",
+      "title": "Saturation: is any pod running out of connections?",
       "collapsed": false,
       "id": 12,
       "gridPos": {
@@ -777,8 +769,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Saturation per $breakdown",
-      "description": "**What:** `in use / max open` for each member.\n\n**Healthy:** below the orange line (70 %).\n\n**If one member is high and the others aren't:** look for slow queries or long transactions on that pod, uneven load balancing (sticky sessions, long-lived HTTP/2 or gRPC connections), or a connection leak.\n\n**If all members rise together:** real capacity need. Scale out or raise `max open`, within the PostgreSQL connection budget.",
+      "title": "Saturation per pod",
+      "description": "**What:** `in use / max open` for each pod.\n\n**Healthy:** below the orange line (70 %).\n\n**If one pod is high and the others aren't:** look for slow queries or long transactions on that pod, uneven load balancing (sticky sessions, long-lived HTTP/2 or gRPC connections), or a connection leak.\n\n**If all pods rise together:** real capacity need. Scale out or raise `max open`, within the PostgreSQL connection budget.",
       "id": 13,
       "datasource": {
         "type": "prometheus",
@@ -796,8 +788,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by ($app_label, $breakdown) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0))",
-          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "expr": "max by ($app_label, $pod_label) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} > 0))",
+          "legendFormat": "{{$pod_label}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -870,8 +862,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Free headroom per $breakdown",
-      "description": "**What:** `max open - in use` for each member: connections still available before callers start waiting.\n\n**Reading:** a member at 0 is saturated *right now*; its next queries wait (see *Contention*). A line that stays flat at 0 while traffic is low suggests leaked connections.",
+      "title": "Free headroom per pod",
+      "description": "**What:** `max open - in use` for each pod: connections still available before callers start waiting.\n\n**Reading:** a pod at 0 is saturated *right now*; its next queries wait (see *Contention*). A line that stays flat at 0 while traffic is low suggests leaked connections.",
       "id": 14,
       "datasource": {
         "type": "prometheus",
@@ -889,8 +881,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) ((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
-          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "expr": "sum by ($app_label, $pod_label) ((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
+          "legendFormat": "{{$pod_label}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -959,7 +951,7 @@
     {
       "type": "timeseries",
       "title": "Pool composition: $application",
-      "description": "**What:** for one application, summed over the selected members: *in use* and *idle* stacked (their sum is *open*), with the *max open* ceiling as a dashed line.\n\n**Reading:**\n- *In use* touching *max*: saturation, callers will wait.\n- *Idle* large and flat: connections kept open for nothing, holding PostgreSQL slots.\n- *Max* changing: the pool configuration or the number of replicas changed.\n\nMembers with an unlimited pool (`max open = 0`) count in *in use*/*idle* but add nothing to *max open*.\n\nOne panel is repeated per selected application.",
+      "description": "**What:** for one application, summed over the selected pods: *in use* and *idle* stacked (their sum is *open*), with the *max open* ceiling as a dashed line.\n\n**Reading:**\n- *In use* touching *max*: saturation, callers will wait.\n- *Idle* large and flat: connections kept open for nothing, holding PostgreSQL slots.\n- *Max* changing: the pool configuration or the number of replicas changed.\n\nPods with an unlimited pool (`max open = 0`) count in *in use*/*idle* but add nothing to *max open*.\n\nOne panel is repeated per selected application.",
       "id": 15,
       "datasource": {
         "type": "prometheus",
@@ -977,7 +969,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum(mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "In use",
           "refId": "A",
           "range": true,
@@ -990,7 +982,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_idle_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum(mpg_db_pool_idle_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "Idle",
           "refId": "B",
           "range": true,
@@ -1003,7 +995,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum(mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "Max open",
           "refId": "C",
           "range": true,
@@ -1151,8 +1143,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Waits per second per $breakdown",
-      "description": "**What:** how often callers on each member found the pool exhausted and had to wait.\n\n**Healthy:** a flat line at 0.\n\n**If not:** match it with *Saturation per member*. Waits always come with saturation near 100 % on the same member.",
+      "title": "Waits per second per pod",
+      "description": "**What:** how often callers on each pod found the pool exhausted and had to wait.\n\n**Healthy:** a flat line at 0.\n\n**If not:** match it with *Saturation per pod*. Waits always come with saturation near 100 % on the same pod.",
       "id": 17,
       "datasource": {
         "type": "prometheus",
@@ -1170,8 +1162,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
-          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "expr": "sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{$pod_label}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -1243,7 +1235,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Average wait time per $breakdown",
+      "title": "Average wait time per pod",
       "description": "**What:** average time a waiting caller spent blocked before getting a connection.\n\n**Reading:** this latency adds directly to the response time of the affected requests. Compare it with your latency SLO: 50 ms of pool wait on a 200 ms budget is a big share.\n\nEmpty when nothing waited, which is the healthy case.",
       "id": 18,
       "datasource": {
@@ -1262,8 +1254,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) / (sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
-          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "expr": "sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) / (sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{$pod_label}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -1337,7 +1329,7 @@
     {
       "type": "timeseries",
       "title": "Requests blocked on the pool (average)",
-      "description": "**What:** `rate(wait_duration_seconds_total)` in seconds of waiting per second. By Little's law this equals the **average number of requests blocked waiting for a connection** at any given time.\n\n**Example:** 3 means that, on average, 3 requests are stuck waiting on that member at any moment. Each of them is a goroutine holding memory and a client waiting.",
+      "description": "**What:** `rate(wait_duration_seconds_total)` in seconds of waiting per second. By Little's law this equals the **average number of requests blocked waiting for a connection** at any given time.\n\n**Example:** 3 means that, on average, 3 requests are stuck waiting on that pod at any moment. Each of them is a goroutine holding memory and a client waiting.",
       "id": 19,
       "datasource": {
         "type": "prometheus",
@@ -1355,8 +1347,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
-          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "expr": "sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{$pod_label}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -1452,7 +1444,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label) (rate(mpg_db_pool_max_lifetime_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "expr": "sum by ($app_label) (rate(mpg_db_pool_max_lifetime_closed_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "{{$app_label}} · max lifetime",
           "refId": "A",
           "range": true,
@@ -1465,7 +1457,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label) (rate(mpg_db_pool_max_idle_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "expr": "sum by ($app_label) (rate(mpg_db_pool_max_idle_closed_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "{{$app_label}} · max idle",
           "refId": "B",
           "range": true,
@@ -1549,7 +1541,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label) (mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"}) / (sum by ($app_label) (rate(mpg_db_pool_max_lifetime_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]) + rate(mpg_db_pool_max_idle_closed_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
+          "expr": "sum by ($app_label) (mpg_db_pool_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"}) / (sum by ($app_label) (rate(mpg_db_pool_max_lifetime_closed_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]) + rate(mpg_db_pool_max_idle_closed_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) > 0)",
           "legendFormat": "{{$app_label}}",
           "refId": "A",
           "range": true,
@@ -1615,8 +1607,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Open connections per $breakdown",
-      "description": "**What:** connections established by each member (in use + idle).\n\n**Reading:** the stacked total is what Companion costs PostgreSQL in connection slots. Steps up and down usually come from deployments and scaling events.",
+      "title": "Open connections per pod",
+      "description": "**What:** connections established by each pod (in use + idle).\n\n**Reading:** the stacked total is what Companion costs PostgreSQL in connection slots. Steps up and down usually come from deployments and scaling events.",
       "id": 23,
       "datasource": {
         "type": "prometheus",
@@ -1634,8 +1626,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
-          "legendFormat": "{{$breakdown}} · {{$app_label}}",
+          "expr": "sum by ($app_label, $pod_label) (mpg_db_pool_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
+          "legendFormat": "{{$pod_label}} · {{$app_label}}",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -1699,7 +1691,7 @@
     },
     {
       "type": "row",
-      "title": "Per-member detail",
+      "title": "Per-pod detail",
       "collapsed": false,
       "id": 24,
       "gridPos": {
@@ -1712,13 +1704,13 @@
     },
     {
       "type": "table",
-      "title": "Current state per $breakdown",
+      "title": "Current state per pod",
       "id": 25,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Live snapshot of every member, busiest first. Click a column header to re-sort. A member with an empty *Saturation* cell has an unlimited pool (`max open = 0`).",
+      "description": "Live snapshot of every pod, busiest first. Click a column header to re-sort. A pod with an empty *Saturation* cell has an unlimited pool (`max open = 0`).",
       "gridPos": {
         "h": 9,
         "w": 24,
@@ -1731,7 +1723,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by ($app_label, $breakdown) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0))",
+          "expr": "max by ($app_label, $pod_label) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} / (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} > 0))",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -1744,7 +1736,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum by ($app_label, $pod_label) (mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "",
           "refId": "B",
           "range": false,
@@ -1757,7 +1749,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_idle_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum by ($app_label, $pod_label) (mpg_db_pool_idle_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "",
           "refId": "C",
           "range": false,
@@ -1770,7 +1762,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum by ($app_label, $pod_label) (mpg_db_pool_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "",
           "refId": "D",
           "range": false,
@@ -1783,7 +1775,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum by ($app_label, $pod_label) (mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "",
           "refId": "E",
           "range": false,
@@ -1796,7 +1788,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) ((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $breakdown=~\"$target\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $breakdown=~\"$target\"})",
+          "expr": "sum by ($app_label, $pod_label) ((mpg_db_pool_max_open_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"} > 0) - mpg_db_pool_in_use_connections{$app_label=~\"$application\", $pod_label=~\"$pod\"})",
           "legendFormat": "",
           "refId": "F",
           "range": false,
@@ -1809,7 +1801,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval]))",
+          "expr": "sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "G",
           "range": false,
@@ -1822,7 +1814,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) / (sum by ($app_label, $breakdown) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $breakdown=~\"$target\"}[$__rate_interval])) > 0)",
+          "expr": "sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_duration_seconds_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) / (sum by ($app_label, $pod_label) (rate(mpg_db_pool_wait_count_total{$app_label=~\"$application\", $pod_label=~\"$pod\"}[$__rate_interval])) > 0)",
           "legendFormat": "",
           "refId": "H",
           "range": false,
@@ -2089,7 +2081,7 @@
     },
     {
       "type": "row",
-      "title": "Reference: metrics and suggested alerts",
+      "title": "Reference: metrics",
       "collapsed": true,
       "id": 27,
       "gridPos": {
@@ -2101,17 +2093,17 @@
       "panels": [
         {
           "type": "text",
-          "title": "Reference",
+          "title": "Metrics reference",
           "id": 26,
           "gridPos": {
-            "h": 30,
+            "h": 13,
             "w": 24,
             "x": 0,
             "y": 52
           },
           "options": {
             "mode": "markdown",
-            "content": "#### Metrics (from Go `sql.DBStats`, exposed by Companion)\n| Metric | Type | `sql.DBStats` field | Meaning |\n|---|---|---|---|\n| `mpg_db_pool_max_open_connections` | gauge | `MaxOpenConnections` | Configured ceiling (`SetMaxOpenConns`). 0 = unlimited. |\n| `mpg_db_pool_open_connections` | gauge | `OpenConnections` | Established connections, in use + idle. |\n| `mpg_db_pool_in_use_connections` | gauge | `InUse` | Connections checked out by a query or transaction. |\n| `mpg_db_pool_idle_connections` | gauge | `Idle` | Open connections waiting in the pool. |\n| `mpg_db_pool_wait_count_total` | counter | `WaitCount` | Times a caller had to wait because the pool was exhausted. |\n| `mpg_db_pool_wait_duration_seconds_total` | counter | `WaitDuration` | Total time spent waiting for a connection. |\n| `mpg_db_pool_max_lifetime_closed_total` | counter | `MaxLifetimeClosed` | Connections closed by `SetConnMaxLifetime`. |\n| `mpg_db_pool_max_idle_closed_total` | counter | `MaxIdleClosed` or `MaxIdleTimeClosed` ⚠️ | See note below. |\n\n⚠️ In Go these are two distinct counters: `MaxIdleClosed` (pool shrinking because of `SetMaxIdleConns`) and `MaxIdleTimeClosed` (`SetConnMaxIdleTime`). The metric's help text mentions `SetConnMaxIdleTime` but its name matches `MaxIdleClosed`. Check which field the code really exports.\n\n#### Suggested alert rules (tune thresholds to your SLOs)\n```yaml\n- alert: CompanionDBPoolSaturated\n  expr: max by (application, instance) (mpg_db_pool_in_use_connections / (mpg_db_pool_max_open_connections > 0)) > 0.9\n  for: 10m\n  labels: {severity: warning}\n- alert: CompanionDBPoolWaiting\n  expr: sum by (application, instance) (rate(mpg_db_pool_wait_count_total[5m])) > 1\n  for: 5m\n  labels: {severity: warning}\n- alert: CompanionDBPoolSlowWait\n  expr: |\n    sum by (application, instance) (rate(mpg_db_pool_wait_duration_seconds_total[5m]))\n      / (sum by (application, instance) (rate(mpg_db_pool_wait_count_total[5m])) > 0) > 0.1\n  for: 5m\n  labels: {severity: critical}\n- alert: CompanionDBPoolUnbounded\n  expr: mpg_db_pool_max_open_connections == 0\n  for: 1h\n  labels: {severity: info}\n- alert: CompanionDBPoolChurn\n  expr: |\n    sum by (application) (mpg_db_pool_open_connections)\n      / (sum by (application) (rate(mpg_db_pool_max_lifetime_closed_total[15m]) + rate(mpg_db_pool_max_idle_closed_total[15m])) > 0) < 60\n  for: 30m\n  labels: {severity: info}\n```"
+            "content": "#### Metrics (from Go `sql.DBStats`, exposed by Companion)\n| Metric | Type | `sql.DBStats` field | Meaning |\n|---|---|---|---|\n| `mpg_db_pool_max_open_connections` | gauge | `MaxOpenConnections` | Configured ceiling (`SetMaxOpenConns`). 0 = unlimited. |\n| `mpg_db_pool_open_connections` | gauge | `OpenConnections` | Established connections, in use + idle. |\n| `mpg_db_pool_in_use_connections` | gauge | `InUse` | Connections checked out by a query or transaction. |\n| `mpg_db_pool_idle_connections` | gauge | `Idle` | Open connections waiting in the pool. |\n| `mpg_db_pool_wait_count_total` | counter | `WaitCount` | Times a caller had to wait because the pool was exhausted. |\n| `mpg_db_pool_wait_duration_seconds_total` | counter | `WaitDuration` | Total time spent waiting for a connection. |\n| `mpg_db_pool_max_lifetime_closed_total` | counter | `MaxLifetimeClosed` | Connections closed by `SetConnMaxLifetime`. |\n| `mpg_db_pool_max_idle_closed_total` | counter | `MaxIdleClosed` or `MaxIdleTimeClosed` ⚠️ | See note below. |\n\n⚠️ In Go these are two distinct counters: `MaxIdleClosed` (pool shrinking because of `SetMaxIdleConns`) and `MaxIdleTimeClosed` (`SetConnMaxIdleTime`). The metric's help text mentions `SetConnMaxIdleTime` but its name matches `MaxIdleClosed`. Check which field the code really exports."
           }
         }
       ]
