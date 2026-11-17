@@ -1,0 +1,478 @@
+[
+  {
+    "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+    },
+    "description": "Time threads spend waiting to get a connection from the Agroal pool. Anything above a few ms means the pool is saturated or the DB holds connections too long.",
+    "fieldConfig": {
+      "defaults": {
+        "color": {
+          "mode": "palette-classic"
+        },
+        "custom": {
+          "drawStyle": "line",
+          "lineWidth": 2,
+          "fillOpacity": 10,
+          "showPoints": "never",
+          "spanNulls": false,
+          "stacking": {
+            "group": "A",
+            "mode": "none"
+          },
+          "thresholdsStyle": {
+            "mode": "off"
+          }
+        },
+        "mappings": [],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 80
+            }
+          ]
+        },
+        "unit": "ms",
+        "min": 0
+      },
+      "overrides": []
+    },
+    "gridPos": {
+      "h": 9,
+      "w": 8,
+      "x": 0,
+      "y": 8002
+    },
+    "id": 901,
+    "options": {
+      "legend": {
+        "calcs": [
+          "max",
+          "mean"
+        ],
+        "displayMode": "table",
+        "placement": "bottom",
+        "showLegend": true
+      },
+      "tooltip": {
+        "mode": "multi",
+        "sort": "desc"
+      }
+    },
+    "targets": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "agroal_blocking_time_average_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
+        "legendFormat": "{{pod}} - avg",
+        "refId": "A",
+        "range": true
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "agroal_blocking_time_max_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
+        "legendFormat": "{{pod}} - max",
+        "refId": "B",
+        "range": true
+      }
+    ],
+    "title": "Connection acquisition wait time",
+    "type": "timeseries"
+  },
+  {
+    "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+    },
+    "description": "High-water mark of simultaneously used connections. Red line = db-pool-max-size (Keycloak default 100): adjust the threshold to your configured value.",
+    "fieldConfig": {
+      "defaults": {
+        "color": {
+          "mode": "palette-classic"
+        },
+        "custom": {
+          "drawStyle": "line",
+          "lineWidth": 2,
+          "fillOpacity": 0,
+          "showPoints": "never",
+          "spanNulls": false,
+          "stacking": {
+            "group": "A",
+            "mode": "none"
+          },
+          "thresholdsStyle": {
+            "mode": "line"
+          }
+        },
+        "mappings": [],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 100
+            }
+          ]
+        },
+        "unit": "short",
+        "min": 0
+      },
+      "overrides": []
+    },
+    "gridPos": {
+      "h": 9,
+      "w": 8,
+      "x": 8,
+      "y": 8002
+    },
+    "id": 902,
+    "options": {
+      "legend": {
+        "calcs": [
+          "max",
+          "lastNotNull"
+        ],
+        "displayMode": "table",
+        "placement": "bottom",
+        "showLegend": true
+      },
+      "tooltip": {
+        "mode": "multi",
+        "sort": "desc"
+      }
+    },
+    "targets": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "agroal_max_used_count{namespace=\"$namespace\", container=\"keycloak\"}",
+        "legendFormat": "{{pod}} - peak used",
+        "refId": "A",
+        "range": true
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "agroal_active_count{namespace=\"$namespace\", container=\"keycloak\"}",
+        "legendFormat": "{{pod}} - active now",
+        "refId": "B",
+        "range": true
+      }
+    ],
+    "title": "Peak used connections vs pool max",
+    "type": "timeseries"
+  },
+  {
+    "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+    },
+    "description": "Should be ~0 in steady state. Sustained churn = db-pool-min-size too low, or something closing connections (PgBouncer, firewall/LB idle timeout, idle_session_timeout).",
+    "fieldConfig": {
+      "defaults": {
+        "color": {
+          "mode": "palette-classic"
+        },
+        "custom": {
+          "drawStyle": "line",
+          "lineWidth": 2,
+          "fillOpacity": 10,
+          "showPoints": "never",
+          "spanNulls": false,
+          "stacking": {
+            "group": "A",
+            "mode": "none"
+          },
+          "thresholdsStyle": {
+            "mode": "off"
+          }
+        },
+        "mappings": [],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 80
+            }
+          ]
+        },
+        "unit": "cps",
+        "min": 0
+      },
+      "overrides": []
+    },
+    "gridPos": {
+      "h": 9,
+      "w": 8,
+      "x": 16,
+      "y": 8002
+    },
+    "id": 903,
+    "options": {
+      "legend": {
+        "calcs": [
+          "max",
+          "mean"
+        ],
+        "displayMode": "table",
+        "placement": "bottom",
+        "showLegend": true
+      },
+      "tooltip": {
+        "mode": "multi",
+        "sort": "desc"
+      }
+    },
+    "targets": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "sum by (pod) (rate(agroal_creation_count_total{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))",
+        "legendFormat": "{{pod}} - created",
+        "refId": "A",
+        "range": true
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "sum by (pod) (rate(agroal_destroy_count_total{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))",
+        "legendFormat": "{{pod}} - destroyed",
+        "refId": "B",
+        "range": true
+      }
+    ],
+    "title": "Connection churn (created / destroyed)",
+    "type": "timeseries"
+  },
+  {
+    "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+    },
+    "description": "Time to open a new physical connection to the database (TCP + TLS + auth).",
+    "fieldConfig": {
+      "defaults": {
+        "color": {
+          "mode": "palette-classic"
+        },
+        "custom": {
+          "drawStyle": "line",
+          "lineWidth": 2,
+          "fillOpacity": 10,
+          "showPoints": "never",
+          "spanNulls": false,
+          "stacking": {
+            "group": "A",
+            "mode": "none"
+          },
+          "thresholdsStyle": {
+            "mode": "off"
+          }
+        },
+        "mappings": [],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 80
+            }
+          ]
+        },
+        "unit": "ms",
+        "min": 0
+      },
+      "overrides": []
+    },
+    "gridPos": {
+      "h": 9,
+      "w": 8,
+      "x": 0,
+      "y": 8011
+    },
+    "id": 904,
+    "options": {
+      "legend": {
+        "calcs": [
+          "max",
+          "mean"
+        ],
+        "displayMode": "table",
+        "placement": "bottom",
+        "showLegend": true
+      },
+      "tooltip": {
+        "mode": "multi",
+        "sort": "desc"
+      }
+    },
+    "targets": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "agroal_creation_time_average_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
+        "legendFormat": "{{pod}} - avg",
+        "refId": "A",
+        "range": true
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "agroal_creation_time_max_milliseconds{namespace=\"$namespace\", container=\"keycloak\"}",
+        "legendFormat": "{{pod}} - max",
+        "refId": "B",
+        "range": true
+      }
+    ],
+    "title": "Connection creation time",
+    "type": "timeseries"
+  },
+  {
+    "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+    },
+    "description": "invalid = dead connections caught by validation (typical after a DB failover). leak = connections held too long by a thread (stays 0 unless leak detection is configured). reaped = idle connections closed by the pool.",
+    "fieldConfig": {
+      "defaults": {
+        "color": {
+          "mode": "palette-classic"
+        },
+        "custom": {
+          "drawStyle": "line",
+          "lineWidth": 2,
+          "fillOpacity": 10,
+          "showPoints": "never",
+          "spanNulls": false,
+          "stacking": {
+            "group": "A",
+            "mode": "none"
+          },
+          "thresholdsStyle": {
+            "mode": "off"
+          }
+        },
+        "mappings": [],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 80
+            }
+          ]
+        },
+        "unit": "short",
+        "min": 0
+      },
+      "overrides": []
+    },
+    "gridPos": {
+      "h": 9,
+      "w": 16,
+      "x": 8,
+      "y": 8011
+    },
+    "id": 905,
+    "options": {
+      "legend": {
+        "calcs": [
+          "max",
+          "sum"
+        ],
+        "displayMode": "table",
+        "placement": "bottom",
+        "showLegend": true
+      },
+      "tooltip": {
+        "mode": "multi",
+        "sort": "desc"
+      }
+    },
+    "targets": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "sum by (pod) (increase(agroal_invalid_count_total{namespace=\"$namespace\", container=\"keycloak\"}[5m]))",
+        "legendFormat": "{{pod}} - invalid",
+        "refId": "A",
+        "range": true
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "sum by (pod) (increase(agroal_leak_detection_count_total{namespace=\"$namespace\", container=\"keycloak\"}[5m]))",
+        "legendFormat": "{{pod}} - leak detected",
+        "refId": "B",
+        "range": true
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "sum by (pod) (increase(agroal_reap_count_total{namespace=\"$namespace\", container=\"keycloak\"}[5m]))",
+        "legendFormat": "{{pod}} - reaped",
+        "refId": "C",
+        "range": true
+      }
+    ],
+    "title": "Invalid / leaked / reaped connections (per 5m)",
+    "type": "timeseries"
+  }
+]
